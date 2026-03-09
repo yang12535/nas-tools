@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  webdav-uploader:
+    build: .
+    container_name: webdav-uploader
+    restart: unless-stopped
+    
+    volumes:
+      - ./upload:/upload
+      - ./logs:/logs
+      - ./config.yaml:/app/config.yaml:ro
+      - ./state.db:/app/state.db
+    
+    environment:
+      - PYTHONUNBUFFERED=1
+    
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import os; os.stat('/app/uploader.py')"]
+      interval: 60s
+      timeout: 10s
+      retries: 3

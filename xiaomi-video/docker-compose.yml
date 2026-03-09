@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  video-processor:
+    build: .
+    container_name: xiaomi-video-processor
+    restart: no  # 处理完退出，用cron或外部调度
+    
+    volumes:
+      - ./merge:/app/video
+      - ./input:/input
+      - ./output:/output
+      - ./logs:/logs
+      - ./state.db:/app/state.db
+    
+    environment:
+      - DELETE_AFTER_MERGE=false
+      - MAX_MERGE=0
+      - COMPRESS_CRF=32
+      - COMPRESS_PRESET=medium
+      - COMPRESS_THREADS=8
+      - COMPRESS_RESOLUTION=1920x1080
+      - DELETE_AFTER_COMPRESS=true
+      - SAVE_INTERVAL=5
