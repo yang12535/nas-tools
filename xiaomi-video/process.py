@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """
-小米摄像头视频处理 - 稳定版 v2.1
-修复：状态持久化、信号处理、资源清理
+小米摄像头视频处理 - 稳定版 v2.2
+整合重构：修复 concat 格式、添加 ffprobe 验证、修复目录删除
+引用源项目：
+- https://github.com/hslr-s/xiaomi-camera-merge (Go版合并)
+- https://github.com/yang12535/xiaomi-compress (Shell版压缩)
 """
 
 import os
 import sys
 import json
+import shutil
 import signal
 import sqlite3
 import subprocess
@@ -31,16 +35,19 @@ class Config:
     threads: int = 8
     resolution: str = "1920x1080"
     delete_after_compress: bool = True
-    state_file: Path = Path("/app/state.db")  # 改为SQLite
-    save_interval: int = 5  # 每N个文件保存一次状态
+    state_file: Path = Path("/app/state.db")
+    save_interval: int = 5
+    # 新增：验证配置
+    verify_video: bool = True  # 使用 ffprobe 验证视频
+    min_output_size: int = 1048576  # 最小输出文件大小 1MB
 
 
-# ============ 日志（修复：持久化句柄） ============
+# ============ 日志 ============
 
 import logging
 
 class Logger:
-    """修复：持久化文件句柄"""
+    """持久化文件句柄日志"""
     
     def __init__(self, log_dir: Path = Path("/logs")):
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -70,10 +77,10 @@ class Logger:
     def error(self, msg: str): self.logger.error(msg)
 
 
-# ============ 状态管理（修复：SQLite + 定期保存） ============
+# ============ 状态管理 ============
 
 class StateManager:
-    """修复：SQLite存储，避免内存无限增长"""
+    """SQLite状态持久化"""
     
     def __init__(self, db_path: Path):
         self.db_path = db_path
@@ -142,7 +149,6 @@ class StateManager:
         self.conn.commit()
     
     def get_stats(self) -> dict:
-        """获取统计信息"""
         cur = self.conn.execute("SELECT COUNT(*) FROM merged_files")
         merged = cur.fetchone()[0]
         cur = self.conn.execute("SELECT COUNT(*) FROM compressed_files")
@@ -152,7 +158,6 @@ class StateManager:
         return {"merged": merged, "compressed": compressed, "failed": failed}
     
     def cleanup_old(self, days: int = 90):
-        """清理N天前的记录"""
         cutoff = (datetime.now() - timedelta(days=days)).isoformat()
         self.conn.execute("DELETE FROM merged_files WHERE time < ?", (cutoff,))
         self.conn.execute("DELETE FROM compressed_files WHERE time < ?", (cutoff,))
@@ -181,7 +186,6 @@ class VideoProcessor:
         self.running = True
         self.processed_since_save = 0
         
-        # 清理临时文件
         self._cleanup_temp_files()
     
     def stop(self):
@@ -190,7 +194,7 @@ class VideoProcessor:
         self.log.info("收到停止信号，当前任务完成后退出...")
     
     def _cleanup_temp_files(self):
-        """修复：启动时清理残留的临时文件"""
+        """启动时清理残留的临时文件"""
         cleaned = 0
         for tmp in self.cfg.output_dir.rglob("*.tmp.mkv"):
             try:
@@ -212,11 +216,25 @@ class VideoProcessor:
             )
             if result.returncode == 0:
                 return True, ""
-            return False, result.stderr[:500]  # 限制错误信息长度
+            return False, result.stderr[:500]
         except subprocess.TimeoutExpired:
             return False, "timeout"
         except Exception as e:
             return False, str(e)[:500]
+    
+    def verify_video(self, video_path: Path) -> bool:
+        """使用 ffprobe 验证视频文件有效性"""
+        try:
+            result = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_format", "-show_streams", str(video_path)],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            return result.returncode == 0
+        except Exception as e:
+            self.log.warning(f"ffprobe 验证失败: {e}")
+            return False
     
     def get_video_files(self, directory: Path, pattern: str = "*.mp4") -> List[Path]:
         if not directory.exists():
@@ -224,14 +242,14 @@ class VideoProcessor:
         return sorted(directory.glob(pattern))
     
     def _maybe_commit(self, force: bool = False):
-        """修复：定期保存状态"""
+        """定期保存状态"""
         self.processed_since_save += 1
         if force or self.processed_since_save >= self.cfg.save_interval:
             self.state.conn.commit()
             self.processed_since_save = 0
     
     def merge_hourly_videos(self, hour_dir: Path) -> Optional[Path]:
-        """合并一个小时的视频文件"""
+        """合并一个小时的视频文件（修复：concat格式、目录删除）"""
         if not self.running:
             return None
         
@@ -255,26 +273,38 @@ class VideoProcessor:
             self.log.info(f"已合并，跳过: {output_file}")
             return output_file
         
-        # 创建concat列表
+        # 创建concat列表（修复：与Go源项目格式一致，不使用引号转义）
         concat_file = hour_dir / ".concat.txt"
         try:
-            with open(concat_file, 'w') as f:
+            with open(concat_file, 'w', encoding='utf-8') as f:
                 for v in videos:
-                    escaped = str(v).replace("'", "'\\''")
-                    f.write(f"file '{escaped}'\n")
+                    # 修复：与Go版本一致，使用相对路径，不加引号
+                    f.write(f"file {v.name}\n")
             
             self.log.info(f"合并 {len(videos)} 个文件到 {output_file}")
             
+            # 修复：在视频目录中执行ffmpeg（与Go版本一致）
             cmd = [
                 "ffmpeg", "-y", "-hide_banner", "-v", "error",
                 "-f", "concat", "-safe", "0",
-                "-i", str(concat_file),
+                "-i", str(concat_file.name),  # 使用相对路径
                 "-c", "copy",
                 "-movflags", "+faststart",
-                str(output_file)
+                str(output_file.name)  # 临时输出到当前目录
             ]
             
             success, error = self.run_ffmpeg(cmd, timeout=3600)
+            
+            # 移动文件到目标位置
+            temp_output = hour_dir / f"{hour}.mov"
+            if success and temp_output.exists():
+                try:
+                    shutil.move(str(temp_output), str(output_file))
+                except Exception as e:
+                    self.log.error(f"移动文件失败: {e}")
+                    if temp_output.exists():
+                        temp_output.unlink()
+                    return None
             
             if success and output_file.exists() and output_file.stat().st_size > 1024:
                 output_size = output_file.stat().st_size
@@ -285,7 +315,12 @@ class VideoProcessor:
                 if self.cfg.delete_after_merge:
                     for v in videos:
                         v.unlink(missing_ok=True)
-                    hour_dir.rmdir()  # 目录应该空了
+                    # 修复：使用 shutil.rmtree 删除整个目录（Go版本使用 RemoveAll）
+                    try:
+                        shutil.rmtree(hour_dir)
+                        self.log.info(f"已删除源目录: {hour_dir.name}")
+                    except Exception as e:
+                        self.log.warning(f"删除源目录失败: {e}")
                 
                 return output_file
             else:
@@ -300,7 +335,7 @@ class VideoProcessor:
             concat_file.unlink(missing_ok=True)
     
     def compress_video(self, mov_file: Path) -> Optional[Path]:
-        """压缩 MOV 到 MKV"""
+        """压缩 MOV 到 MKV（修复：添加ffprobe验证）"""
         if not self.running:
             return None
         
@@ -314,10 +349,18 @@ class VideoProcessor:
             return output_file
         
         # 检查输出是否已存在且有效
-        if output_file.exists() and output_file.stat().st_size > 1048576:
-            self.log.info(f"输出已存在，跳过: {output_file}")
-            self.state.mark_compressed(str(output_file), mov_file.stat().st_size, output_file.stat().st_size)
-            return output_file
+        if output_file.exists():
+            if output_file.stat().st_size > self.cfg.min_output_size:
+                # 修复：验证现有文件
+                if not self.cfg.verify_video or self.verify_video(output_file):
+                    self.log.info(f"输出已存在且有效，跳过: {output_file}")
+                    self.state.mark_compressed(str(output_file), mov_file.stat().st_size, output_file.stat().st_size)
+                    return output_file
+                else:
+                    self.log.warning(f"输出文件无效，重新压缩: {output_file}")
+            else:
+                self.log.warning(f"输出文件太小，删除后重新压缩: {output_file}")
+                output_file.unlink()
         
         input_size = mov_file.stat().st_size
         self.log.info(f"压缩 {mov_file.name} ({input_size/1024/1024:.1f}MB)")
@@ -343,22 +386,33 @@ class VideoProcessor:
             
             if success and temp_file.exists():
                 output_size = temp_file.stat().st_size
-                if output_size > 1048576:
-                    temp_file.rename(output_file)
-                    self.state.mark_compressed(str(output_file), input_size, output_size, commit=False)
-                    self._maybe_commit()
-                    
-                    ratio = (1 - output_size / input_size) * 100
-                    self.log.info(f"压缩完成: {output_file.name} (节省{ratio:.1f}%)")
-                    
-                    if self.cfg.delete_after_compress:
-                        mov_file.unlink()
-                    
-                    return output_file
-                else:
-                    self.log.error(f"输出文件太小: {output_size} bytes")
+                
+                # 修复：检查文件大小
+                if output_size < self.cfg.min_output_size:
+                    self.log.error(f"输出文件太小({output_size} bytes): {mov_file.name}")
                     temp_file.unlink(missing_ok=True)
                     self.state.mark_failed(str(mov_file), "compress", "output too small")
+                    return None
+                
+                # 修复：ffprobe 验证
+                if self.cfg.verify_video and not self.verify_video(temp_file):
+                    self.log.error(f"ffprobe 验证失败: {mov_file.name}")
+                    temp_file.unlink(missing_ok=True)
+                    self.state.mark_failed(str(mov_file), "compress", "ffprobe verify failed")
+                    return None
+                
+                # 移动文件
+                temp_file.rename(output_file)
+                self.state.mark_compressed(str(output_file), input_size, output_size, commit=False)
+                self._maybe_commit()
+                
+                ratio = (1 - output_size / input_size) * 100
+                self.log.info(f"压缩完成: {output_file.name} (节省{ratio:.1f}%)")
+                
+                if self.cfg.delete_after_compress:
+                    mov_file.unlink()
+                
+                return output_file
             else:
                 self.log.error(f"压缩失败: {error}")
                 self.state.mark_failed(str(mov_file), "compress", error)
@@ -374,7 +428,8 @@ class VideoProcessor:
     def run(self) -> bool:
         """主流程"""
         self.log.info("=" * 50)
-        self.log.info("小米摄像头视频处理工具 v2.1")
+        self.log.info("小米摄像头视频处理工具 v2.2")
+        self.log.info("整合源项目: xiaomi-camera-merge + xiaomi-compress")
         self.log.info(f"配置: CRF={self.cfg.crf}, 分辨率={self.cfg.resolution}")
         self.log.info("=" * 50)
         
@@ -402,7 +457,6 @@ class VideoProcessor:
             if result:
                 stats["merged"] += 1
         
-        # 强制提交状态
         self._maybe_commit(force=True)
         
         # 压缩
@@ -420,7 +474,6 @@ class VideoProcessor:
             else:
                 stats["failed"] += 1
         
-        # 强制提交状态
         self._maybe_commit(force=True)
         
         # 统计
@@ -448,6 +501,8 @@ def main():
         delete_after_compress=os.getenv("DELETE_AFTER_COMPRESS", "true").lower() == "true",
         state_file=Path(os.getenv("STATE_FILE", "/app/state.db")),
         save_interval=int(os.getenv("SAVE_INTERVAL", "5")),
+        verify_video=os.getenv("VERIFY_VIDEO", "true").lower() == "true",
+        min_output_size=int(os.getenv("MIN_OUTPUT_SIZE", "1048576")),
     )
     
     logger = Logger()
@@ -455,7 +510,6 @@ def main():
     with StateManager(cfg.state_file) as state:
         processor = VideoProcessor(cfg, logger, state)
         
-        # 信号处理
         def on_signal(signum, frame):
             processor.stop()
         

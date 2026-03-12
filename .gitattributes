@@ -1,0 +1,30 @@
+# 自动处理换行符
+* text=auto
+
+# 强制使用 LF 换行符
+*.py text eol=lf
+*.sh text eol=lf
+*.bash text eol=lf
+Dockerfile text eol=lf
+docker-compose.yml text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+Makefile text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+
+# Windows 批处理文件保持 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制文件不处理
+*.db binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.mov binary
+*.mp4 binary
+*.mkv binary

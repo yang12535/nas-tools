@@ -7,11 +7,11 @@ services:
     restart: no  # 处理完退出，用cron或外部调度
     
     volumes:
-      - ./merge:/app/video
-      - ./input:/input
-      - ./output:/output
-      - ./logs:/logs
-      - ./state.db:/app/state.db
+      - ./merge:/app/video        # 小米摄像头原始视频目录
+      - ./input:/input            # 合并后的MOV文件
+      - ./output:/output          # 压缩后的MKV文件
+      - ./logs:/logs              # 日志文件
+      - ./state.db:/app/state.db  # 状态数据库
     
     environment:
       - DELETE_AFTER_MERGE=false
@@ -21,4 +21,14 @@ services:
       - COMPRESS_THREADS=8
       - COMPRESS_RESOLUTION=1920x1080
       - DELETE_AFTER_COMPRESS=true
+      - STATE_FILE=/app/state.db
       - SAVE_INTERVAL=5
+      - VERIFY_VIDEO=true
+      - MIN_OUTPUT_SIZE=1048576
+    
+    # 资源限制（与源项目 xiaomi-compress 保持一致）
+    deploy:
+      resources:
+        limits:
+          cpus: "8"
+          memory: 4G

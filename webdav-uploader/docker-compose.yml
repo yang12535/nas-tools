@@ -7,13 +7,20 @@ services:
     restart: unless-stopped
     
     volumes:
-      - ./upload:/upload
-      - ./logs:/logs
-      - ./config.yaml:/app/config.yaml:ro
-      - ./state.db:/app/state.db
+      - ./upload:/upload          # 待上传文件目录
+      - ./logs:/logs              # 日志文件
+      - ./config.yaml:/app/config.yaml:ro  # 配置文件
+      - ./state.db:/app/state.db  # SQLite 状态数据库
     
     environment:
       - PYTHONUNBUFFERED=1
+    
+    # 资源限制
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 256M
     
     # 健康检查
     healthcheck:

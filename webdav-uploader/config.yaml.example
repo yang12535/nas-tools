@@ -1,0 +1,37 @@
+# WebDAV 文件上传器配置
+# 复制此文件为 config.yaml 并修改配置
+
+# WebDAV 服务器配置
+webdav_url: "https://example.com/dav"
+webdav_user: "username"
+webdav_pass: "password"
+webdav_root: "/backup"
+
+# 限速配置（字节/秒）
+# 默认 1MB/s = 1048576
+# 设为 0 表示不限速
+rate_limit: 1048576
+
+# 监控目录
+watch_dir: "./upload"
+
+# 轮询间隔（秒）
+interval: 3600
+
+# 上传后删除本地文件
+delete_after_upload: true
+
+# 上传后校验 MD5
+verify_checksum: true
+
+# 分块大小（字节）
+chunk_size: 8192
+
+# 日志级别: DEBUG, INFO, WARNING, ERROR
+log_level: "INFO"
+
+# 日志文件路径（留空则不写入文件）
+log_file: "/logs/uploader.log"
+
+# SQLite 数据库路径
+db_path: "/app/state.db"
