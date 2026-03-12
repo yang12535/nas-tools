@@ -14,7 +14,9 @@ services:
       - ./state.db:/app/state.db  # 状态数据库
     
     environment:
-      - DELETE_AFTER_MERGE=false
+      # 合并后删除源文件（建议开启，节省空间）
+      # 注意：删除后无法恢复，确保合并成功后再开启
+      - DELETE_AFTER_MERGE=true
       - MAX_MERGE=0
       - COMPRESS_CRF=32
       - COMPRESS_PRESET=medium
